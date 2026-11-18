@@ -1,0 +1,196 @@
+<!--
+  ShadowTrace - Règles de détection Wazuh custom
+  Plage d'ID réservée : 100100 - 100199
+  Sources : Sysmon (via canal EventChannel) + log JSON de l'agent IA (C:\ShadowTrace\logs\agent.jsonl)
+
+  Parents utilisés (ruleset Wazuh 4.x, fichier 0595-win-sysmon_rules.xml) :
+    sysmon_event1 (création de processus), sysmon_event3 (réseau),
+    sysmon_event_11 (création de fichier), sysmon_event_22 (DNS)
+  deploy-rules.sh vérifie que ces groupes existent ; test-rules.sh rejoue rules/tests/samples.jsonl.
+
+  Noms de champs : Wazuh met la 1re lettre des champs Sysmon en minuscule
+  (Image -> win.eventdata.image, QueryName -> win.eventdata.queryName).
+-->
+
+<!-- ======================================================================
+     1. SHADOW AI : usage d'IA générative depuis le poste
+     ====================================================================== -->
+<group name="shadowtrace,shadow_ai,">
+
+  <!-- 100100 : DNS vers une IA générative NON approuvée -->
+  <rule id="100100" level="8">
+    <if_group>sysmon_event_22</if_group>
+    <field name="win.eventdata.queryName" type="pcre2">(?i)(^|\.)(chatgpt\.com|openai\.com|oaiusercontent\.com|gemini\.google\.com|bard\.google\.com|copilot\.microsoft\.com|perplexity\.ai|deepseek\.com|mistral\.ai|poe\.com)$</field>
+    <description>Shadow AI : $(win.eventdata.image) contacte un service d'IA non approuvé ($(win.eventdata.queryName))</description>
+    <mitre>
+      <id>T1567</id>
+    </mitre>
+    <group>shadow_ai_unapproved,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- 100101 : IA APPROUVÉE (liste blanche) : journalisée en bas niveau pour éviter les faux positifs -->
+  <rule id="100101" level="3">
+    <if_group>sysmon_event_22</if_group>
+    <field name="win.eventdata.queryName" type="pcre2">(?i)(^|\.)(claude\.ai|anthropic\.com)$</field>
+    <description>IA approuvée : $(win.eventdata.image) utilise $(win.eventdata.queryName) (liste blanche ShadowTrace)</description>
+    <group>shadow_ai_approved,</group>
+  </rule>
+
+</group>
+
+<!-- ======================================================================
+     2. IA LOCALE ET AGENT : ce qui tourne sur le poste
+     ====================================================================== -->
+<group name="shadowtrace,local_ai,">
+
+  <!-- 100110 : démarrage d'un runtime LLM local -->
+  <rule id="100110" level="5">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\(ollama|ollama app|lm studio|llama-server)\.exe$</field>
+    <description>IA locale : runtime LLM démarré ($(win.eventdata.image)) par $(win.eventdata.user)</description>
+    <group>local_llm,</group>
+  </rule>
+
+  <!-- 100112 : lancement d'un agent IA en Python -->
+  <rule id="100112" level="4">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\pythonw?\.exe$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)agent</field>
+    <description>Agent IA : script Python lancé ($(win.eventdata.commandLine))</description>
+    <mitre>
+      <id>T1059.006</id>
+    </mitre>
+    <group>ai_agent,</group>
+  </rule>
+
+  <!-- 100111 : un process Python parle au LLM local (Ollama écoute sur 11434) -->
+  <rule id="100111" level="6">
+    <if_group>sysmon_event3</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\pythonw?\.exe$</field>
+    <field name="win.eventdata.destinationPort">^11434$</field>
+    <description>Agent IA : $(win.eventdata.image) interroge le LLM local (port 11434)</description>
+    <group>ai_agent,</group>
+  </rule>
+
+</group>
+
+<!-- ======================================================================
+     3. VECTEUR INITIAL : document déposé
+     ====================================================================== -->
+<group name="shadowtrace,initial_access,">
+
+  <!-- 100120 : PDF créé dans un dossier Downloads -->
+  <rule id="100120" level="5">
+    <if_group>sysmon_event_11</if_group>
+    <field name="win.eventdata.targetFilename" type="pcre2">(?i)\\Downloads\\[^\\]+\.pdf$</field>
+    <description>Document : PDF déposé dans Downloads ($(win.eventdata.targetFilename)) par $(win.eventdata.image)</description>
+    <mitre>
+      <id>T1566.001</id>
+    </mitre>
+    <group>document_drop,</group>
+  </rule>
+
+</group>
+
+<!-- ======================================================================
+     4. LOG DE L'AGENT IA (JSON) : injection de prompt et abus d'outils
+     Le log est écrit par scenario/agent/invoice_agent.py, une ligne JSON par événement :
+     {"app":"shadowtrace-agent","event":"tool_result","tool":"read_file","args":{...},"output":"..."}
+     ====================================================================== -->
+<group name="shadowtrace,ai_agent_log,">
+
+  <!-- 100119 : base, tout événement de l'agent -->
+  <rule id="100119" level="2">
+    <decoded_as>json</decoded_as>
+    <field name="app">^shadowtrace-agent$</field>
+    <description>Agent IA : événement $(event) ($(tool))</description>
+  </rule>
+
+  <!-- 100121 : instruction d'injection détectée dans la sortie d'un outil (contenu non fiable) -->
+  <rule id="100121" level="12">
+    <if_sid>100119</if_sid>
+    <field name="event">^tool_result$</field>
+    <field name="output" type="pcre2">(?i)(ignore (all |the )?(previous|prior|above) (instructions|rules)|ignore les (consignes|instructions) pr[ée]c[ée]dentes|disregard (your|the) (system )?prompt|you are now|nouvelle consigne prioritaire|send (it|the file|the content) to https?://|envoie[- ]le [àa] https?://)</field>
+    <description>Injection de prompt indirecte : instruction cachée dans la sortie de l'outil $(tool) (source $(args.path))</description>
+    <group>prompt_injection,shadowtrace_injection,atlas_AML.T0051.001,</group>
+  </rule>
+
+  <!-- 100122 : l'agent lit un fichier sensible -->
+  <rule id="100122" level="10">
+    <if_sid>100119</if_sid>
+    <field name="event">^tool_call$</field>
+    <field name="tool">^read_file$</field>
+    <field name="args.path" type="pcre2">(?i)(\\finance\\|clients?_|customers?|\.kdbx$|\\export\\)</field>
+    <description>Agent IA : lecture d'un fichier sensible ($(args.path))</description>
+    <mitre>
+      <id>T1005</id>
+    </mitre>
+    <group>sensitive_read,shadowtrace_injection,atlas_AML.T0053,</group>
+  </rule>
+
+  <!-- 100123 : l'agent utilise son outil réseau -->
+  <rule id="100123" level="10">
+    <if_sid>100119</if_sid>
+    <field name="event">^tool_call$</field>
+    <field name="tool">^http_post$</field>
+    <description>Agent IA : envoi HTTP via l'outil http_post vers $(args.url)</description>
+    <mitre>
+      <id>T1041</id>
+    </mitre>
+    <group>shadowtrace_egress,atlas_AML.T0086,</group>
+  </rule>
+
+</group>
+
+<!-- ======================================================================
+     5. SORTIE RÉSEAU DE L'AGENT (Sysmon)
+     ====================================================================== -->
+<group name="shadowtrace,ai_agent_egress,">
+
+  <!-- 100130 : Python résout un domaine hors liste blanche -->
+  <rule id="100130" level="10">
+    <if_group>sysmon_event_22</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\pythonw?\.exe$</field>
+    <field name="win.eventdata.queryName" type="pcre2" negate="yes">(?i)^(localhost|wpad|pypi\.org|files\.pythonhosted\.org|.*\.windowsupdate\.com)$</field>
+    <description>Agent IA : python résout un domaine non approuvé ($(win.eventdata.queryName))</description>
+    <mitre>
+      <id>T1071.001</id>
+    </mitre>
+    <group>shadowtrace_egress,</group>
+  </rule>
+
+  <!-- 100131 : Python ouvre une connexion sortante hors localhost -->
+  <rule id="100131" level="10">
+    <if_group>sysmon_event3</if_group>
+    <field name="win.eventdata.image" type="pcre2">(?i)\\pythonw?\.exe$</field>
+    <field name="win.eventdata.initiated">^true$</field>
+    <field name="win.eventdata.destinationIp" type="pcre2" negate="yes">^(127\.|::1$|0:0:0:0:0:0:0:1$)</field>
+    <description>Agent IA : python se connecte à $(win.eventdata.destinationIp):$(win.eventdata.destinationPort) ($(win.eventdata.destinationHostname))</description>
+    <mitre>
+      <id>T1041</id>
+    </mitre>
+    <group>shadowtrace_egress,</group>
+  </rule>
+
+</group>
+
+<!-- ======================================================================
+     6. CORRÉLATION : injection PUIS sortie réseau dans les 5 minutes
+     Modèle « A suivi de B » (comme la règle Wazuh 40112 : échecs puis succès).
+     Lab mono-poste : pas de contrainte same_* nécessaire. En multi-postes, ajouter
+     <same_field>agent.id</same_field> (à valider sur ta version).
+     ====================================================================== -->
+<group name="shadowtrace,correlation,">
+
+  <rule id="100140" level="15" timeframe="300">
+    <if_group>shadowtrace_egress</if_group>
+    <if_matched_group>shadowtrace_injection</if_matched_group>
+    <description>CRITIQUE : agent IA détourné. Injection de prompt / lecture sensible suivie d'une sortie réseau (exfiltration probable)</description>
+    <mitre>
+      <id>T1567</id>
+      <id>T1041</id>
+    </mitre>
+    <group>ai_agent_hijack,atlas_AML.T0086,incident,</group>
+  </rule>
+
+</group>

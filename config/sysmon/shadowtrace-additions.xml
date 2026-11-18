@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ajouts ShadowTrace à la config Sysmon de SwiftOnSecurity.
+  infra/windows/01-install-sysmon.ps1 télécharge la config de base puis applique ce fichier :
+    - <NetworkConnect> et <FileCreate> : règles ajoutées aux blocs onmatch="include" existants
+    - <DnsQueryUnexclude> : exclusions DNS de la config de base RETIRÉES si elles masquent un service IA
+  Pourquoi : la config de base ne journalise le réseau que pour une liste de processus connus
+  (python.exe et ollama.exe n'y sont pas), et filtre beaucoup de domaines Google/Microsoft.
+-->
+<ShadowTraceAdditions>
+  <NetworkConnect>
+    <Image name="ShadowTrace: agent IA Python" condition="end with">\python.exe</Image>
+    <Image name="ShadowTrace: agent IA Python" condition="end with">\pythonw.exe</Image>
+    <Image name="ShadowTrace: LLM local" condition="end with">\ollama.exe</Image>
+    <DestinationPort name="ShadowTrace: API Ollama" condition="is">11434</DestinationPort>
+  </NetworkConnect>
+  <FileCreate>
+    <TargetFilename name="ShadowTrace: documents reçus" condition="contains">\Downloads\</TargetFilename>
+    <TargetFilename name="ShadowTrace: données sensibles" condition="begin with">C:\Finance\</TargetFilename>
+  </FileCreate>
+  <DnsQueryUnexclude>
+    <!-- Expressions régulières : toute exclusion DNS dont le texte correspond est supprimée -->
+    <Pattern>google\.com</Pattern>
+    <Pattern>microsoft\.com</Pattern>
+    <Pattern>openai|chatgpt|anthropic|claude|gemini|copilot</Pattern>
+  </DnsQueryUnexclude>
+</ShadowTraceAdditions>

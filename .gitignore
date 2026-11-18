@@ -1,0 +1,16 @@
+# Preuves et sorties locales (jamais de vraies données dans le repo)
+evidence/*
+!evidence/README.md
+viz/incident.json
+*.evtx
+*.pdf
+*.csv
+!rules/tests/*.csv
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Secrets
+.env
+*.pem
+*.key

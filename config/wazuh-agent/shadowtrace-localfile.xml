@@ -1,0 +1,17 @@
+  <!-- ===== ShadowTrace : début (ajouté par infra/windows/02-install-wazuh-agent.ps1) ===== -->
+  <!-- Sysmon : processus, réseau, fichiers, DNS -->
+  <localfile>
+    <location>Microsoft-Windows-Sysmon/Operational</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+  <!-- PowerShell : utile pour l'enquête (scripts lancés par l'utilisateur) -->
+  <localfile>
+    <location>Microsoft-Windows-PowerShell/Operational</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+  <!-- Log de l'agent IA : une ligne JSON par appel d'outil / réponse du modèle -->
+  <localfile>
+    <location>C:\ShadowTrace\logs\agent.jsonl</location>
+    <log_format>json</log_format>
+  </localfile>
+  <!-- ===== ShadowTrace : fin ===== -->
